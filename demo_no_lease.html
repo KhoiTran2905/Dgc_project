@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Demo KHÔNG có Lease — Memory Leak</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; padding: 24px; }
+
+  h1 { font-size: 18px; color: #ff4444; margin-bottom: 4px; letter-spacing: 1px; }
+  .subtitle { font-size: 12px; color: #666; margin-bottom: 24px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+
+  .site-box { background: #111; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+  .site-title { font-size: 13px; font-weight: bold; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-a { background: #4fc3f7; }
+  .dot-b { background: #81c784; }
+  .dot-dead { background: #555; }
+
+  .obj-grid { display: flex; flex-wrap: wrap; gap: 6px; min-height: 60px; }
+  .obj { padding: 6px 10px; border-radius: 4px; font-size: 11px; border: 1px solid; transition: all 0.4s; }
+  .obj-alive { background: #1a2a1a; border-color: #81c784; color: #81c784; }
+  .obj-leaked { background: #2a1a00; border-color: #ff9800; color: #ff9800; animation: pulse 1s infinite; }
+  .obj-dead { background: #1a1a1a; border-color: #333; color: #444; text-decoration: line-through; }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+  .ref-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
+  .ref-tag { font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid #4fc3f7; color: #4fc3f7; background: #0a1a2a; }
+  .ref-none { color: #444; font-size: 11px; font-style: italic; }
+
+  .controls { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  button { font-family: 'Courier New', monospace; font-size: 12px; padding: 8px 16px; border-radius: 4px; border: 1px solid; cursor: pointer; background: transparent; transition: all 0.15s; }
+  button:hover { opacity: 0.8; }
+  button:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn-blue { border-color: #4fc3f7; color: #4fc3f7; }
+  .btn-red { border-color: #ff4444; color: #ff4444; }
+  .btn-gray { border-color: #555; color: #888; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .stat { background: #111; border: 1px solid #222; border-radius: 6px; padding: 10px; text-align: center; }
+  .stat-val { font-size: 24px; font-weight: bold; }
+  .stat-lbl { font-size: 10px; color: #555; margin-top: 2px; }
+  .s-green { color: #81c784; }
+  .s-orange { color: #ff9800; }
+  .s-red { color: #ff4444; }
+  .s-blue { color: #4fc3f7; }
+
+  .log { background: #0a0a0a; border: 1px solid #222; border-radius: 6px; padding: 10px; height: 140px; overflow-y: auto; }
+  .log-line { font-size: 11px; line-height: 1.8; color: #555; }
+  .log-line.err { color: #ff4444; }
+  .log-line.warn { color: #ff9800; }
+  .log-line.ok { color: #81c784; }
+  .log-line.info { color: #4fc3f7; }
+
+  .problem-box { background: #1a0a0a; border: 1px solid #ff4444; border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+  .problem-title { color: #ff4444; font-size: 12px; font-weight: bold; margin-bottom: 6px; }
+  .problem-text { font-size: 11px; color: #888; line-height: 1.7; }
+
+  .ram-bar-wrap { margin-top: 10px; }
+  .ram-label { font-size: 10px; color: #555; margin-bottom: 4px; }
+  .ram-bar { height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden; }
+  .ram-fill { height: 100%; background: #81c784; border-radius: 3px; transition: all 0.5s; }
+  .ram-fill.danger { background: #ff4444; }
+  .ram-fill.warn { background: #ff9800; }
+</style>
+</head>
+<body>
+
+<h1>⚠ DEMO KHÔNG CÓ LEASE — Memory Leak</h1>
+<p class="subtitle">RC thuần túy: khi Site A crash, Site B không bao giờ biết → objects bị giữ mãi mãi</p>
+
+<div class="problem-box">
+  <div class="problem-title">VẤN ĐỀ: Không có cơ chế phát hiện crash</div>
+  <div class="problem-text">
+    Với RC thuần túy, Site B chỉ giảm RC khi nhận được thông báo từ Site A.<br>
+    Nếu Site A crash đột ngột → không gửi được thông báo → RC không bao giờ về 0 → <span style="color:#ff4444">MEMORY LEAK</span>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="stat-val s-green" id="s-alive">5</div><div class="stat-lbl">Objects alive</div></div>
+  <div class="stat"><div class="stat-val s-blue" id="s-refs">0</div><div class="stat-lbl">Active refs</div></div>
+  <div class="stat"><div class="stat-val s-orange" id="s-leaked">0</div><div class="stat-lbl">LEAKED 🔴</div></div>
+  <div class="stat"><div class="stat-val s-red" id="s-ram">0%</div><div class="stat-lbl">RAM wasted</div></div>
+</div>
+
+<div class="controls">
+  <button class="btn-blue" onclick="addRef()" id="btn-add">+ Add ref A→B</button>
+  <button class="btn-gray" onclick="releaseRef()">- Release ref (bình thường)</button>
+  <button class="btn-red" onclick="crashA()" id="btn-crash">⚡ Crash Site A</button>
+  <button class="btn-gray" onclick="resetAll()">↺ Reset</button>
+</div>
+
+<div class="grid">
+  <div class="site-box">
+    <div class="site-title">
+      <span class="dot dot-a" id="dot-a"></span>
+      SITE A
+      <span id="a-status" style="font-size:10px;color:#4fc3f7">RUNNING</span>
+    </div>
+    <div style="font-size:11px;color:#555;margin-bottom:8px">Objects đang giữ refs:</div>
+    <div class="ref-list" id="ref-list"><span class="ref-none">chưa có ref nào</span></div>
+    <div class="ram-bar-wrap">
+      <div class="ram-label">RAM Site A</div>
+      <div class="ram-bar"><div class="ram-fill" id="ram-a" style="width:30%"></div></div>
+    </div>
+  </div>
+
+  <div class="site-box">
+    <div class="site-title">
+      <span class="dot dot-b"></span>
+      SITE B
+      <span style="font-size:10px;color:#81c784">RUNNING</span>
+    </div>
+    <div style="font-size:11px;color:#555;margin-bottom:8px">Objects trong RAM:</div>
+    <div class="obj-grid" id="obj-grid"></div>
+    <div class="ram-bar-wrap">
+      <div class="ram-label">RAM Site B</div>
+      <div class="ram-bar"><div class="ram-fill" id="ram-b" style="width:20%"></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="log" id="log"></div>
+
+<script>
+const state = {
+  siteAAlive: true,
+  objects: {},
+  refs: [],
+  nextObj: 1,
+  nextRef: 1,
+  leakedCount: 0,
+}
+
+function init() {
+  state.objects = {}
+  state.nextObj = 1
+  for (let i = 0; i < 5; i++) {
+    const id = 'B' + (state.nextObj++)
+    state.objects[id] = { id, rc: 0, local_rc: 1, deleted: false }
+  }
+}
+
+function log(msg, cls = '') {
+  const d = document.getElementById('log')
+  const t = new Date().toLocaleTimeString('en', { hour12: false })
+  const e = document.createElement('div')
+  e.className = 'log-line ' + cls
+  e.textContent = `[${t}] ${msg}`
+  d.insertBefore(e, d.firstChild)
+}
+
+function totalRC(obj) { return obj.rc + obj.local_rc }
+
+function addRef() {
+  if (!state.siteAAlive) { log('Site A đã crash — không thể add ref', 'err'); return }
+  const bObjs = Object.values(state.objects).filter(o => !o.deleted)
+  if (!bObjs.length) { log('Không còn object nào', 'warn'); return }
+  const to = bObjs[Math.floor(Math.random() * bObjs.length)].id
+  const from = 'A' + (state.nextRef++)
+  const ref = { id: 'ref-' + state.nextRef, from, to, alive: true }
+  state.refs.push(ref)
+  state.objects[to].rc++
+  log(`${from} → ${to}: ref added (RC của ${to} = ${totalRC(state.objects[to])})`, 'info')
+  render()
+}
+
+function releaseRef() {
+  const active = state.refs.filter(r => r.alive)
+  if (!active.length) { log('Không có ref nào để release', 'warn'); return }
+  const ref = active[Math.floor(Math.random() * active.length)]
+  ref.alive = false
+  const obj = state.objects[ref.to]
+  if (obj) {
+    obj.rc = Math.max(0, obj.rc - 1)
+    log(`${ref.from} → ${ref.to}: released (RC = ${totalRC(obj)})`, 'ok')
+    if (totalRC(obj) === 0) {
+      obj.deleted = true
+      log(`✓ ${ref.to} collected — RC = 0`, 'ok')
+    }
+  }
+  render()
+}
+
+function crashA() {
+  if (!state.siteAAlive) return
+  state.siteAAlive = false
+  document.getElementById('btn-add').disabled = true
+  document.getElementById('btn-crash').disabled = true
+  document.getElementById('a-status').textContent = 'CRASHED ⚡'
+  document.getElementById('a-status').style.color = '#ff4444'
+  document.getElementById('dot-a').className = 'dot dot-dead'
+
+  const activeRefs = state.refs.filter(r => r.alive)
+  log(`⚡ SITE A CRASHED! ${activeRefs.length} refs bị bỏ lại`, 'err')
+  log('Không có Lease → Site B KHÔNG BIẾT A đã chết', 'err')
+  log('Objects bị giữ bởi refs mồ côi sẽ KHÔNG BAO GIỜ được xóa!', 'err')
+
+  // Tính leaked
+  state.leakedCount = 0
+  Object.values(state.objects).forEach(obj => {
+    if (!obj.deleted && obj.rc > 0 && obj.local_rc === 0) {
+      state.leakedCount++
+      log(`⚠ ${obj.id}: RC=${totalRC(obj)} — BỊ LEAK! Không ai xóa nó cả`, 'warn')
+    }
+  })
+  render()
+
+  // Sau 3s show hậu quả
+  setTimeout(() => {
+    log('3 giây trôi qua... Site B vẫn giữ tất cả objects vì RC > 0', 'warn')
+    log('10 giây trôi qua... vẫn leak', 'warn')
+    log('1 giờ trôi qua... vẫn leak. Mãi mãi.', 'err')
+  }, 3000)
+}
+
+function resetAll() {
+  state.siteAAlive = true
+  state.refs = []
+  state.nextRef = 1
+  state.leakedCount = 0
+  document.getElementById('btn-add').disabled = false
+  document.getElementById('btn-crash').disabled = false
+  document.getElementById('a-status').textContent = 'RUNNING'
+  document.getElementById('a-status').style.color = '#4fc3f7'
+  document.getElementById('dot-a').className = 'dot dot-a'
+  document.getElementById('log').innerHTML = ''
+  init()
+  log('Reset — hệ thống khởi động lại')
+  render()
+}
+
+function render() {
+  // Objects
+  const grid = document.getElementById('obj-grid')
+  grid.innerHTML = ''
+  const bObjs = Object.values(state.objects)
+  bObjs.forEach(obj => {
+    const rc = totalRC(obj)
+    const div = document.createElement('div')
+    let cls = 'obj '
+    const isLeaked = !obj.deleted && obj.rc > 0 && !state.siteAAlive
+    if (obj.deleted) cls += 'obj-dead'
+    else if (isLeaked) cls += 'obj-leaked'
+    else cls += 'obj-alive'
+    div.className = cls
+    div.innerHTML = `${obj.id}<br><span style="font-size:9px">RC=${rc}</span>`
+    if (isLeaked) div.title = 'LEAKED — không bao giờ được xóa!'
+    grid.appendChild(div)
+  })
+
+  // Refs
+  const refList = document.getElementById('ref-list')
+  const active = state.refs.filter(r => r.alive)
+  if (!active.length) {
+    refList.innerHTML = '<span class="ref-none">chưa có ref nào</span>'
+  } else {
+    refList.innerHTML = active.map(r =>
+      `<span class="ref-tag">${r.from}→${r.to}</span>`
+    ).join('')
+  }
+
+  // Stats
+  const alive = bObjs.filter(o => !o.deleted).length
+  const leaked = bObjs.filter(o => !o.deleted && o.rc > 0 && !state.siteAAlive).length
+  state.leakedCount = leaked
+  const ramPct = Math.min(100, 20 + leaked * 15 + active.length * 5)
+  document.getElementById('s-alive').textContent = alive
+  document.getElementById('s-refs').textContent = active.length
+  document.getElementById('s-leaked').textContent = leaked
+  document.getElementById('s-ram').textContent = ramPct + '%'
+
+  // RAM bars
+  const ramB = document.getElementById('ram-b')
+  ramB.style.width = ramPct + '%'
+  ramB.className = 'ram-fill' + (ramPct > 70 ? ' danger' : ramPct > 50 ? ' warn' : '')
+}
+
+init()
+log('Hệ thống khởi động — KHÔNG có Lease mechanism')
+log('Thử: Add ref → Crash Site A → xem objects bị leak')
+render()
+</script>
+</body>
+</html>

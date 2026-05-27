@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Demo CÓ Lease — Giải quyết Memory Leak</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; padding: 24px; }
+
+  h1 { font-size: 18px; color: #81c784; margin-bottom: 4px; letter-spacing: 1px; }
+  .subtitle { font-size: 12px; color: #666; margin-bottom: 24px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+
+  .site-box { background: #111; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+  .site-title { font-size: 13px; font-weight: bold; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-a { background: #4fc3f7; }
+  .dot-b { background: #81c784; }
+  .dot-dead { background: #555; }
+
+  .obj-grid { display: flex; flex-wrap: wrap; gap: 6px; min-height: 60px; }
+  .obj { padding: 6px 10px; border-radius: 4px; font-size: 11px; border: 1px solid; transition: all 0.4s; }
+  .obj-alive { background: #1a2a1a; border-color: #81c784; color: #81c784; }
+  .obj-collected { background: #0a1a0a; border-color: #2a4a2a; color: #2a4a2a; text-decoration: line-through; }
+  .obj-candidate { background: #1a1a0a; border-color: #ff9800; color: #ff9800; }
+
+  .controls { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  button { font-family: 'Courier New', monospace; font-size: 12px; padding: 8px 16px; border-radius: 4px; border: 1px solid; cursor: pointer; background: transparent; transition: all 0.15s; }
+  button:hover { opacity: 0.8; }
+  button:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn-blue { border-color: #4fc3f7; color: #4fc3f7; }
+  .btn-red { border-color: #ff4444; color: #ff4444; }
+  .btn-green { border-color: #81c784; color: #81c784; }
+  .btn-gray { border-color: #555; color: #888; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .stat { background: #111; border: 1px solid #222; border-radius: 6px; padding: 10px; text-align: center; }
+  .stat-val { font-size: 24px; font-weight: bold; }
+  .stat-lbl { font-size: 10px; color: #555; margin-top: 2px; }
+  .s-green { color: #81c784; }
+  .s-orange { color: #ff9800; }
+  .s-red { color: #ff4444; }
+  .s-blue { color: #4fc3f7; }
+
+  .log { background: #0a0a0a; border: 1px solid #222; border-radius: 6px; padding: 10px; height: 140px; overflow-y: auto; }
+  .log-line { font-size: 11px; line-height: 1.8; color: #555; }
+  .log-line.err { color: #ff4444; }
+  .log-line.warn { color: #ff9800; }
+  .log-line.ok { color: #81c784; }
+  .log-line.info { color: #4fc3f7; }
+
+  .solution-box { background: #0a1a0a; border: 1px solid #81c784; border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+  .solution-title { color: #81c784; font-size: 12px; font-weight: bold; margin-bottom: 6px; }
+  .solution-text { font-size: 11px; color: #888; line-height: 1.7; }
+
+  /* Lease countdown */
+  .lease-section { margin-bottom: 10px; }
+  .lease-label { font-size: 10px; color: #555; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .lease-bar-wrap { height: 8px; background: #1a1a1a; border-radius: 4px; overflow: hidden; }
+  .lease-fill { height: 100%; border-radius: 4px; transition: width 0.2s linear, background 0.5s; }
+
+  .ref-lease { display: flex; flex-direction: column; gap: 4px; max-height: 100px; overflow-y: auto; }
+  .ref-row { display: flex; align-items: center; gap: 6px; font-size: 10px; }
+  .ref-id { color: #4fc3f7; min-width: 60px; }
+  .ref-bar-wrap { flex: 1; height: 4px; background: #1a1a1a; border-radius: 2px; overflow: hidden; }
+  .ref-bar { height: 100%; border-radius: 2px; transition: width 0.2s linear; }
+  .ref-none { color: #444; font-size: 11px; font-style: italic; }
+
+  .ram-bar-wrap { margin-top: 10px; }
+  .ram-label { font-size: 10px; color: #555; margin-bottom: 4px; }
+  .ram-bar { height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden; }
+  .ram-fill { height: 100%; background: #81c784; border-radius: 3px; transition: all 0.5s; }
+
+  .heartbeat { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #81c784; margin-left: 4px; }
+  .heartbeat.active { animation: hb 0.3s ease; }
+  @keyframes hb { 0%{transform:scale(1)} 50%{transform:scale(1.8);background:#fff} 100%{transform:scale(1)} }
+</style>
+</head>
+<body>
+
+<h1>✓ DEMO CÓ LEASE — Giải quyết Memory Leak</h1>
+<p class="subtitle">Lease-based DGC: Site A phải gia hạn định kỳ → nếu crash, lease hết hạn → Site B tự động dọn dẹp</p>
+
+<div class="solution-box">
+  <div class="solution-title">GIẢI PHÁP: Lease Mechanism</div>
+  <div class="solution-text">
+    Mỗi ref có thời hạn 10 giây. Site A phải gia hạn mỗi 3 giây (heartbeat ●).<br>
+    Nếu Site A crash → không gia hạn → lease hết hạn → GC daemon phát hiện → <span style="color:#81c784">tự động xóa object ✓</span>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="stat-val s-green" id="s-alive">5</div><div class="stat-lbl">Objects alive</div></div>
+  <div class="stat"><div class="stat-val s-blue" id="s-refs">0</div><div class="stat-lbl">Active refs</div></div>
+  <div class="stat"><div class="stat-val s-green" id="s-collected">0</div><div class="stat-lbl">Auto collected ✓</div></div>
+  <div class="stat"><div class="stat-val s-orange" id="s-leaked">0</div><div class="stat-lbl">Leaked</div></div>
+</div>
+
+<div class="controls">
+  <button class="btn-blue" onclick="addRef()" id="btn-add">+ Add ref A→B</button>
+  <button class="btn-gray" onclick="releaseRef()">- Release ref</button>
+  <button class="btn-red" onclick="crashA()" id="btn-crash">⚡ Crash Site A</button>
+  <button class="btn-gray" onclick="resetAll()">↺ Reset</button>
+  <span style="font-size:11px;color:#555;margin-left:8px">
+    Heartbeat A <span class="heartbeat" id="hb"></span>
+    &nbsp;|&nbsp; GC scan mỗi 2s
+  </span>
+</div>
+
+<div class="grid">
+  <div class="site-box">
+    <div class="site-title">
+      <span class="dot dot-a" id="dot-a"></span>
+      SITE A
+      <span id="a-status" style="font-size:10px;color:#4fc3f7">RUNNING</span>
+    </div>
+    <div style="font-size:11px;color:#555;margin-bottom:6px">Refs đang giữ + thời gian lease còn lại:</div>
+    <div class="ref-lease" id="ref-list"><span class="ref-none">chưa có ref nào</span></div>
+    <div class="ram-bar-wrap">
+      <div class="ram-label">RAM Site A</div>
+      <div class="ram-bar"><div class="ram-fill" id="ram-a" style="width:30%"></div></div>
+    </div>
+  </div>
+
+  <div class="site-box">
+    <div class="site-title">
+      <span class="dot dot-b"></span>
+      SITE B — GC Daemon
+      <span style="font-size:10px;color:#81c784">RUNNING</span>
+    </div>
+    <div style="font-size:11px;color:#555;margin-bottom:8px">Objects trong RAM:</div>
+    <div class="obj-grid" id="obj-grid"></div>
+    <div class="ram-bar-wrap">
+      <div class="ram-label">RAM Site B</div>
+      <div class="ram-bar"><div class="ram-fill" id="ram-b" style="width:20%"></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="log" id="log"></div>
+
+<script>
+const LEASE_MS = 10000
+const RENEW_MS = 3000
+const GC_MS    = 2000
+
+const state = {
+  siteAAlive: true,
+  objects: {},
+  refs: [],
+  nextObj: 1,
+  nextRef: 1,
+  collectedCount: 0,
+  renewTimer: null,
+  gcTimer: null,
+  leakedCount: 0,
+}
+
+function init() {
+  state.objects = {}
+  state.nextObj = 1
+  for (let i = 0; i < 5; i++) {
+    const id = 'B' + (state.nextObj++)
+    state.objects[id] = { id, rc: 0, local_rc: 1, deleted: false }
+  }
+}
+
+function log(msg, cls = '') {
+  const d = document.getElementById('log')
+  const t = new Date().toLocaleTimeString('en', { hour12: false })
+  const e = document.createElement('div')
+  e.className = 'log-line ' + cls
+  e.textContent = `[${t}] ${msg}`
+  d.insertBefore(e, d.firstChild)
+}
+
+function totalRC(obj) { return obj.rc + obj.local_rc }
+
+function tryCollect(objId) {
+  const obj = state.objects[objId]
+  if (!obj || obj.deleted) return
+  if (totalRC(obj) === 0) {
+    obj.deleted = true
+    state.collectedCount++
+    log(`✓ GC collected '${objId}' — RC=0, memory freed`, 'ok')
+  }
+}
+
+function addRef() {
+  if (!state.siteAAlive) { log('Site A crashed — không thể add ref', 'err'); return }
+  const bObjs = Object.values(state.objects).filter(o => !o.deleted)
+  if (!bObjs.length) { log('Không còn object nào', 'warn'); return }
+  const to = bObjs[Math.floor(Math.random() * bObjs.length)].id
+  const from = 'A' + (state.nextRef++)
+  const ref = { id: 'ref' + state.nextRef, from, to, alive: true, expiry: Date.now() + LEASE_MS }
+  state.refs.push(ref)
+  state.objects[to].rc++
+  log(`${from}→${to}: ref added, lease 10s (RC=${totalRC(state.objects[to])})`, 'info')
+  render()
+}
+
+function releaseRef() {
+  const active = state.refs.filter(r => r.alive)
+  if (!active.length) { log('Không có ref nào', 'warn'); return }
+  const ref = active[Math.floor(Math.random() * active.length)]
+  ref.alive = false
+  const obj = state.objects[ref.to]
+  if (obj) {
+    obj.rc = Math.max(0, obj.rc - 1)
+    log(`${ref.from}→${ref.to}: released (RC=${totalRC(obj)})`, 'ok')
+    tryCollect(ref.to)
+  }
+  render()
+}
+
+function renewLeases() {
+  if (!state.siteAAlive) return
+  const active = state.refs.filter(r => r.alive)
+  if (!active.length) return
+  active.forEach(r => { r.expiry = Date.now() + LEASE_MS })
+  // Heartbeat animation
+  const hb = document.getElementById('hb')
+  hb.className = 'heartbeat active'
+  setTimeout(() => hb.className = 'heartbeat', 300)
+}
+
+function gcScan() {
+  const now = Date.now()
+  const expired = state.refs.filter(r => r.alive && r.expiry < now)
+  if (expired.length) {
+    log(`GC daemon: phát hiện ${expired.length} lease hết hạn!`, 'warn')
+    expired.forEach(ref => {
+      ref.alive = false
+      const obj = state.objects[ref.to]
+      if (obj && !obj.deleted) {
+        obj.rc = Math.max(0, obj.rc - 1)
+        log(`Lease expired: ${ref.from}→${ref.to} (RC=${totalRC(obj)})`, 'warn')
+        tryCollect(ref.to)
+      }
+    })
+    render()
+  }
+}
+
+function crashA() {
+  if (!state.siteAAlive) return
+  state.siteAAlive = false
+  clearInterval(state.renewTimer)
+  document.getElementById('btn-add').disabled = true
+  document.getElementById('btn-crash').disabled = true
+  document.getElementById('a-status').textContent = 'CRASHED ⚡'
+  document.getElementById('a-status').style.color = '#ff4444'
+  document.getElementById('dot-a').className = 'dot dot-dead'
+  document.getElementById('hb').style.background = '#333'
+
+  const activeRefs = state.refs.filter(r => r.alive)
+  log(`⚡ SITE A CRASHED! ${activeRefs.length} refs bị bỏ lại`, 'err')
+  log(`Lease sẽ hết hạn sau ~${LEASE_MS/1000}s → GC daemon sẽ tự xử lý`, 'info')
+  render()
+}
+
+function resetAll() {
+  clearInterval(state.renewTimer)
+  clearInterval(state.gcTimer)
+  state.siteAAlive = true
+  state.refs = []
+  state.nextRef = 1
+  state.collectedCount = 0
+  state.leakedCount = 0
+  document.getElementById('btn-add').disabled = false
+  document.getElementById('btn-crash').disabled = false
+  document.getElementById('a-status').textContent = 'RUNNING'
+  document.getElementById('a-status').style.color = '#4fc3f7'
+  document.getElementById('dot-a').className = 'dot dot-a'
+  document.getElementById('hb').style.background = '#81c784'
+  document.getElementById('log').innerHTML = ''
+  init()
+  startTimers()
+  log('Reset — hệ thống khởi động lại với Lease mechanism')
+  log(`Lease duration = ${LEASE_MS/1000}s | Renew interval = ${RENEW_MS/1000}s | GC scan = ${GC_MS/1000}s`)
+  render()
+}
+
+function startTimers() {
+  state.renewTimer = setInterval(renewLeases, RENEW_MS)
+  state.gcTimer    = setInterval(gcScan, GC_MS)
+}
+
+function render() {
+  // Objects
+  const grid = document.getElementById('obj-grid')
+  grid.innerHTML = ''
+  Object.values(state.objects).forEach(obj => {
+    const rc = totalRC(obj)
+    const div = document.createElement('div')
+    let cls = 'obj '
+    if (obj.deleted) cls += 'obj-collected'
+    else if (rc === 0) cls += 'obj-candidate'
+    else cls += 'obj-alive'
+    div.className = cls
+    div.innerHTML = `${obj.id}<br><span style="font-size:9px">RC=${rc}</span>`
+    grid.appendChild(div)
+  })
+
+  // Ref list với lease bar
+  const refEl = document.getElementById('ref-list')
+  const active = state.refs.filter(r => r.alive)
+  if (!active.length) {
+    refEl.innerHTML = '<span class="ref-none">chưa có ref nào</span>'
+  } else {
+    refEl.innerHTML = ''
+    active.forEach(ref => {
+      const pct = Math.max(0, (ref.expiry - Date.now()) / LEASE_MS * 100)
+      const barColor = pct > 50 ? '#81c784' : pct > 20 ? '#ff9800' : '#ff4444'
+      const row = document.createElement('div')
+      row.className = 'ref-row'
+      row.innerHTML = `
+        <span class="ref-id">${ref.from}→${ref.to}</span>
+        <div class="ref-bar-wrap">
+          <div class="ref-bar" style="width:${pct}%;background:${barColor}"></div>
+        </div>
+        <span style="font-size:9px;color:#555;min-width:28px">${Math.ceil(pct/10)}s</span>
+      `
+      refEl.appendChild(row)
+    })
+  }
+
+  // Stats
+  const bObjs = Object.values(state.objects)
+  const alive = bObjs.filter(o => !o.deleted).length
+  const leaked = bObjs.filter(o => !o.deleted && o.rc > 0 && !state.siteAAlive).length
+  state.leakedCount = leaked
+  const ramPct = Math.max(10, 20 + alive * 8 - state.collectedCount * 5)
+
+  document.getElementById('s-alive').textContent = alive
+  document.getElementById('s-refs').textContent = active.length
+  document.getElementById('s-collected').textContent = state.collectedCount
+  document.getElementById('s-leaked').textContent = leaked
+
+  const ramB = document.getElementById('ram-b')
+  ramB.style.width = Math.min(100, ramPct) + '%'
+}
+
+init()
+startTimers()
+setInterval(render, 200)
+log('Hệ thống khởi động VỚI Lease mechanism')
+log(`Lease = ${LEASE_MS/1000}s | Renew mỗi ${RENEW_MS/1000}s | GC scan mỗi ${GC_MS/1000}s`)
+log('Thử: Add ref → Crash Site A → xem GC tự động collect sau 10s')
+render()
+</script>
+</body>
+</html>
