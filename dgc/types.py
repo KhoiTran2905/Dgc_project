@@ -53,6 +53,10 @@ class LeaseRef:
     def is_expired(self):
         return time.time() > self.lease_expiry
 
+    def expire(self, expired_at: float = None):
+        self.alive = False
+        self.expired_at = expired_at if expired_at is not None else time.time()
+
     def to_dict(self):
         return {
             "_id": self.ref_id,
